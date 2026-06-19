@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Fleet Monitor: Canvas 255대 스케일 관제</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <script src="https://unpkg.com/konva@9/konva.min.js"></script>
+    <style>
+        body { background-color: #0d1117; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        h3 { margin-bottom: 20px; color: #a4b0be; font-weight: 400; }
+        
+        .dashboard-container { position: relative; padding-left: 40px; padding-bottom: 30px; }
+        /* 이제 #map은 HTML 태그가 들어가는 게 아니라 Canvas 도화지가 장착될 공간입니다. */
+        #map { width: 800px; height: 450px; background-color: #050811; border-left: 2px solid #57606f; border-bottom: 2px solid #57606f; }
+        
+        .axis-x { position: absolute; bottom: 0; left: 40px; width: 800px; height: 25px; }
+        .axis-y { position: absolute; top: 0; left: 0; width: 35px; height: 450px; }
+        .tick { position: absolute; font-size: 10px; color: #747d8c; }
+        .axis-x .tick { transform: translateX(-50%); text-align: center; }
+        .axis-y .tick { transform: translateY(-50%); text-align: right; width: 100%; }
+    </style>
+</head>
+<body>
+
+    <h3>FLEET MONITOR: Canvas 255+ Scalability Mode</h3>
+    
+    <div class="dashboard-container">
+        <div id="axis-y" class="axis-y"></div>
+        <div id="map"></div> <div id="axis-x" class="axis-x"></div>
+    </div>
+
+    <script>
+        // 1. 눈금 축 레이아웃 생성 (이전과 동일)
+        const step = 50, mapWidth = 800, mapHeight = 450;
+        for (let x = 0; x <= mapWidth; x += step) {
+            const tick = document.createElement('div'); tick.className = 'tick'; tick.style.left = `${x}px`; tick.innerText = x; document.getElementById('axis-x').appendChild(tick);
+        }
+        for (let y = 0; y <= mapHeight; y += step) {
+            const tick = document.createElement('div'); tick.className = 'tick'; tick.style.top = `${y}px`; tick.innerText = y; document.getElementById('axis-y').appendChild(tick);
+        }
+
+        // 2. 💡 Konva.js로 고성능 Canvas 맵 초기화
+        const stage = new Konva.Stage({
+            container: 'map',
+            width: mapWidth,
+            height: mapHeight,
+        });
+
+        const traceLayer = new Konva.Layer(); // 궤적을 그릴 레이어 (밑바닥)
+        const deviceLayer = new Konva.Layer(); // 로봇 점들을 그릴 레이어 (위)
+        stage.add(traceLayer, deviceLayer);
+
+        // 배경 격자선(Grid)을 Canvas로 그리기
+        for (let i = 0; i < mapWidth; i += step) {
+            traceLayer.add(new Konva.Line({ points: [i, 0, i, mapHeight], stroke: 'rgba(31, 41, 61, 0.4)', strokeWidth: 1 }));
+        }
+        for (let j = 0; j < mapHeight; j += step) {
+            traceLayer.add(new Konva.Line({ points: [0, j, mapWidth, j], stroke: 'rgba(31, 41, 61, 0.4)', strokeWidth: 1 }));
+        }
+        traceLayer.draw();
+
+        // 3. 실시간 데이터 처리 및 애니메이션 연동
+        const ws = new WebSocket("ws://localhost:8000/ws");
+
+        ws.onmessage = function(event) {
+            const devicesConfig = JSON.parse(event.data);
+
+            for (const [id, config] of Object.entries(devicesConfig)) {
+                
+                // Canvas용 그룹(점 + 텍스트 라벨) 생성
+                const deviceGroup = new Konva.Group({
+                    x: config.path[0].x,
+                    y: config.path[0].y
+                });
+
+                // 초록색 로봇 점 그리기
+                const circle = new Konva.Circle({
+                    radius: 7,
+                    fill: config.color,
+                    shadowColor: config.color,
+                    shadowBlur: 10,
+                });
+
+                // ID 텍스트 라벨 그리기
+                const text = new Konva.Text({
+                    text: id,
+                    x: 12,
+                    y: -6,
+                    fill: '#a4b0be',
+                    fontSize: 11
+                });
+
+                deviceGroup.add(circle, text);
+                deviceLayer.add(deviceGroup);
+
+                // 💡 마우스 클릭 이벤트도 단 한 줄로 쉽게 구현 가능!
+                deviceGroup.on('click', () => {
+                    alert(`I am : ${id}`);
+                });
+
+                // 4. 애니메이션 및 고성능 궤적 구현
+                // ──────────────────────────────────────────────────────────
+                // 케이스 A: 원운동 (spin)
+                // ──────────────────────────────────────────────────────────
+                if (config.options && config.options.type === 'spin') {
+                    // 회전 중심축 기준을 반지름만큼 밀어주기
+                    deviceGroup.offset({ x: -config.options.radius, y: 0 });
+                    
+                    gsap.to(deviceGroup, {
+                        rotation: -360,
+                        duration: config.options.duration,
+                        repeat: -1,
+                        ease: "none",
+                        onUpdate: () => {
+                            deviceLayer.batchDraw(); // 화면 효율적 갱신
+                            if (config.options.show_trace) {
+                                // 회전하는 개체의 절대 좌표를 구해서 궤적 추가
+                                const transform = deviceGroup.getAbsoluteTransform();
+                                const pos = transform.point({x: 0, y: 0});
+                                drawCanvasTrace(pos.x, pos.y, config.color);
+                            }
+                        }
+                    });
+                } 
+                // ──────────────────────────────────────────────────────────
+                // 케이스 B: 일반 경로 이동 (왕복, 삼각형 등)
+                // ──────────────────────────────────────────────────────────
+                else {
+                    const tl = gsap.timeline({ 
+                        repeat: -1, 
+                        yoyo: config.options.yoyo,
+                        onUpdate: () => {
+                            deviceLayer.batchDraw(); // 움직일 때마다 효율적으로 그림 업데이트
+                            if (config.options.show_trace) {
+                                drawCanvasTrace(deviceGroup.x(), deviceGroup.y(), config.color);
+                            }
+                        }
+                    });
+
+                    config.path.forEach((point, index) => {
+                        if (index === 0 && !config.options.yoyo) return; 
+                        tl.to(deviceGroup, {
+                            x: point.x, y: point.y,
+                            duration: config.options.duration,
+                            ease: config.options.yoyo ? "power1.inOut" : "none"
+                        });
+                    });
+
+                    if (!config.options.yoyo) {
+                        tl.to(deviceGroup, { x: config.path[0].x, y: config.path[0].y, duration: config.options.duration, ease: "none" });
+                    }
+                }
+            }
+            ws.close();
+        };
+
+        // 💡 255대를 견디는 초경량 궤적 그리기 함수
+        function drawCanvasTrace(x, y, color) {
+            const traceDot = new Konva.Circle({
+                x: x, y: y, radius: 2, fill: color, opacity: 0.6
+            });
+            traceLayer.add(traceDot);
+            traceLayer.batchDraw();
+
+            // 3초 뒤에 페이드 아웃되며 메모리에서 완전 삭제
+            gsap.to(traceDot, {
+                opacity: 0, duration: 3,
+                onComplete: () => {
+                    traceDot.destroy();
+                    traceLayer.batchDraw();
+                }
+            });
+        }
+    </script>
+</body>
+</html>

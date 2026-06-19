@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Fleet Monitor: 축 눈금 및 격자 추가</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <style>
+        body { background-color: #0d1117; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        h3 { margin-bottom: 20px; color: #a4b0be; font-weight: 400; }
+        
+        /* 대시보드 전체를 감싸는 컨테이너 (축과 맵이 들어갈 자리) */
+        .dashboard-container {
+            position: relative;
+            padding-left: 40px;  /* Y축 눈금이 들어갈 공간 */
+            padding-bottom: 30px; /* X축 눈금이 들어갈 공간 */
+        }
+
+        /* 💡 실시간 위치 맵 (배경에 격자 무늬 추가) */
+        #map { 
+            width: 800px; 
+            height: 450px; 
+            background-color: #050811; 
+            border-left: 2px solid #57606f; /* Y축 경계선 */
+            border-bottom: 2px solid #57606f; /* X축 경계선 */
+            position: relative; 
+            overflow: hidden; 
+
+            /* 50px 간격의 격자(Grid) 배경 스타일 */
+            background-image: 
+                linear-gradient(rgba(31, 41, 61, 0.5) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(31, 41, 61, 0.5) 1px, transparent 1px);
+            background-size: 50px 50px;
+        }
+
+        /* 개체 점 스타일 */
+        .dot { width: 14px; height: 14px; border-radius: 50%; position: absolute; top: 0; left: 0; z-index: 10; }
+        .label { position: absolute; font-size: 11px; color: #a4b0be; transform: translate(18px, -6px); white-space: nowrap; }
+        .trace-dot { width: 4px; height: 4px; border-radius: 50%; position: absolute; transform: translate(5px, 5px); pointer-events: none; z-index: 1; }
+
+        /* 💡 X축 눈금 스타일 */
+        .axis-x {
+            position: absolute;
+            bottom: 0;
+            left: 40px; /* padding-left와 일치 */
+            width: 800px;
+            height: 25px;
+        }
+        /* 💡 Y축 눈금 스타일 */
+        .axis-y {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 35px;
+            height: 450px;
+        }
+
+        /* 눈금 숫자 공통 스타일 */
+        .tick {
+            position: absolute;
+            font-size: 10px;
+            color: #747d8c;
+        }
+        .axis-x .tick { transform: translateX(-50%); text-align: center; }
+        .axis-y .tick { transform: translateY(-50%); text-align: right; width: 100%; }
+    </style>
+</head>
+<body>
+
+    <h3>FLEET MONITOR: Grid & Axis Coordinate System</h3>
+    
+    <div class="dashboard-container">
+        <div id="axis-y" class="axis-y"></div>
+        
+        <div id="map"></div>
+        
+        <div id="axis-x" class="axis-x"></div>
+    </div>
+
+    <script>
+        const map = document.getElementById('map');
+        const axisX = document.getElementById('axis-x');
+        const axisY = document.getElementById('axis-y');
+
+        // 💡 1. 50픽셀 간격으로 X축과 Y축에 눈금 숫자 자 동으로 생성하기
+        const step = 50;
+        const mapWidth = 800;
+        const mapHeight = 450;
+
+        // X축 눈금 생성 (0, 50, 100, 150 ... 800)
+        for (let x = 0; x <= mapWidth; x += step) {
+            const tick = document.createElement('div');
+            tick.className = 'tick';
+            tick.style.left = `${x}px`;
+            tick.innerText = x;
+            axisX.appendChild(tick);
+        }
+
+        // Y축 눈금 생성 (0, 50, 100, 150 ... 450)
+        for (let y = 0; y <= mapHeight; y += step) {
+            const tick = document.createElement('div');
+            tick.className = 'tick';
+            tick.style.top = `${y}px`;
+            tick.innerText = y;
+            axisY.appendChild(tick);
+        }
+
+        // 2. 궤적 생성 함수
+        function createTraceDot(x, y, color) {
+            const trace = document.createElement('div');
+            trace.className = 'trace-dot';
+            trace.style.backgroundColor = color;
+            trace.style.left = `${x}px`;
+            trace.style.top = `${y}px`;
+            trace.style.opacity = '0.6';
+            map.appendChild(trace);
+
+            gsap.to(trace, {
+                opacity: 0,
+                duration: 4,
+                onComplete: () => trace.remove()
+            });
+        }
+
+        // 3. 웹소켓 실시간 데이터 수신 및 애니메이션
+        const ws = new WebSocket("ws://localhost:8000/ws");
+
+        ws.onmessage = function(event) {
+            const devicesConfig = JSON.parse(event.data);
+
+            for (const [id, config] of Object.entries(devicesConfig)) {
+                const dot = document.createElement('div');
+                dot.id = id;
+                dot.className = 'dot';
+                dot.style.backgroundColor = config.color;
+                dot.style.boxShadow = `0 0 12px ${config.color}`;
+                
+                const label = document.createElement('span');
+                label.className = 'label';
+                label.innerText = id;
+                dot.appendChild(label);
+                map.appendChild(dot);
+
+                // 케이스 A: 원운동 (spin 타입)
+                if (config.options && config.options.type === 'spin') {
+                    gsap.set(dot, { 
+                        x: config.path[0].x, 
+                        y: config.path[0].y,
+                        transformOrigin: `-${config.options.radius}px center`
+                    });
+                    
+                    gsap.to(dot, {
+                        rotation: -360,
+                        duration: config.options.duration,
+                        repeat: -1,
+                        ease: "none",
+                        onUpdate: function() {
+                            if (config.options.show_trace) {
+                                const rect = dot.getBoundingClientRect();
+                                const mapRect = map.getBoundingClientRect();
+                                const currentX = rect.left - mapRect.left;
+                                const currentY = rect.top - mapRect.top;
+                                createTraceDot(currentX, currentY, config.color);
+                            }
+                        }
+                    });
+                } 
+                // 케이스 B: 일반 경로 이동
+                else {
+                    gsap.set(dot, { x: config.path[0].x, y: config.path[0].y });
+
+                    const tl = gsap.timeline({ 
+                        repeat: -1, 
+                        yoyo: config.options.yoyo,
+                        onUpdate: function() {
+                            if (config.options.show_trace) {
+                                const currentX = gsap.getProperty(dot, "x");
+                                const currentY = gsap.getProperty(dot, "y");
+                                createTraceDot(currentX, currentY, config.color);
+                            }
+                        }
+                    });
+
+                    config.path.forEach((point, index) => {
+                        if (index === 0 && !config.options.yoyo) return; 
+                        tl.to(dot, {
+                            x: point.x,
+                            y: point.y,
+                            duration: config.options.duration,
+                            ease: config.options.yoyo ? "power1.inOut" : "none"
+                        });
+                    });
+
+                    if (!config.options.yoyo) {
+                        tl.to(dot, {
+                            x: config.path[0].x,
+                            y: config.path[0].y,
+                            duration: config.options.duration,
+                            ease: "none"
+                        });
+                    }
+                }
+            }
+            ws.close(); 
+        };
+    </script>
+</body>
+</html>
